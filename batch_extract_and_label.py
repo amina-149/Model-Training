@@ -15,6 +15,8 @@ import glob
 import os
 import re
 
+from PIL import Image
+
 from src.pdf_processor import extract_pdf_metadata
 from src.figure_extractor import extract_figures
 from src.figure_labeler import generate_figure_label
@@ -22,6 +24,17 @@ from src.duplicate_detector import detect_duplicate
 
 DATA_DIR = "data"
 OUTPUT_CSV = os.path.join("outputs", "final_dataset_batch.csv")
+
+MIN_IMAGE_DIMENSION = 80
+
+
+def is_too_small(image_path):
+    try:
+        with Image.open(image_path) as image:
+            width, height = image.size
+        return width < MIN_IMAGE_DIMENSION or height < MIN_IMAGE_DIMENSION
+    except Exception:
+        return False
 
 MONTAGE_KEYWORDS = [
     "dataset", "sample images", "examples of", "collection of",
@@ -116,6 +129,10 @@ def main():
         print(f"  {len(figures)} figures extracted")
 
         for figure in figures:
+
+            if is_too_small(figure["image_path"]):
+                print(f"  figure {figure.get('figure_number')} skipped (too small, likely a logo/icon)")
+                continue
 
             try:
                 record = generate_figure_label(figure, paper_id)
