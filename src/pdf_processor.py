@@ -1,6 +1,5 @@
 import pymupdf
 import os
-import re
 
 
 def extract_text_from_pdf(pdf_path):
@@ -43,95 +42,18 @@ def extract_pdf_metadata(pdf_path):
     return metadata
 
 
-CAPTION_PATTERN = re.compile(
-    r"((?:Fig(?:ure)?|Table|Chart|Graph|Plate|Map)\.?\s*\d+[:.\-]?\s*[^\n]*)",
-    re.IGNORECASE
-)
-
-MIN_IMAGE_DIMENSION = 80
-
-
-def _find_caption_near(page_text, rect, page):
-    """
-    Find the figure/table caption line closest to the image's
-    bounding box on the page (captions are usually just below,
-    sometimes above, the image).
-    """
-
-    blocks = page.get_text("blocks")
-
-    candidates = []
-
-    for block in blocks:
-
-        x0, y0, x1, y1, text = block[0], block[1], block[2], block[3], block[4]
-
-        match = CAPTION_PATTERN.search(text)
-
-        if not match:
-            continue
-
-        distance = min(
-            abs(y0 - rect.y1),
-            abs(rect.y0 - y1)
-        )
-
-        candidates.append((distance, match.group(1).strip()))
-
-    if candidates:
-        candidates.sort(key=lambda item: item[0])
-        return candidates[0][1]
-
-    match = CAPTION_PATTERN.search(page_text or "")
-
-    if match:
-        return match.group(1).strip()
-
-    return "NOT_REPORTED"
-
-
-def _visual_label_type_from_caption(caption):
-
-    match = re.match(
-        r"\s*(Fig(?:ure)?|Table|Chart|Graph|Plate|Map)",
-        caption or "",
-        re.IGNORECASE
-    )
-
-    if not match:
-        return "UNKNOWN"
-
-    word = match.group(1).upper()
-
-    if word.startswith("FIG"):
-        return "FIG"
-
-    return word
-
-
 def extract_figures(pdf_path, output_dir="outputs/figures"):
     """
-    Extract images embedded in the PDF, paired with the paper
-    text/caption evidence each image needs to be labeled.
+    Extract images embedded in the PDF.
     """
 
     document = pymupdf.open(pdf_path)
 
     os.makedirs(output_dir, exist_ok=True)
 
-    page_texts = [page.get_text() for page in document]
-
-    full_paper_text = "\n".join(page_texts)
-
     figures = []
 
-    figure_number = 0
-
-    for page_index, page in enumerate(document):
-
-        page_number = page_index + 1
-
-        page_text = page_texts[page_index]
+    for page_number, page in enumerate(document, start=1):
 
         images = page.get_images(full=True)
 
@@ -143,17 +65,6 @@ def extract_figures(pdf_path, output_dir="outputs/figures"):
 
             image_bytes = image_data["image"]
             image_ext = image_data["ext"]
-            image_width = image_data.get("width", 0)
-            image_height = image_data.get("height", 0)
-
-            if (
-                image_width < MIN_IMAGE_DIMENSION
-                or image_height < MIN_IMAGE_DIMENSION
-            ):
-                # Skip tiny images (logos, icons, decorative rules)
-                continue
-
-            figure_number += 1
 
             file_name = (
                 f"page_{page_number}_image_{image_number}.{image_ext}"
@@ -164,26 +75,7 @@ def extract_figures(pdf_path, output_dir="outputs/figures"):
             with open(output_path, "wb") as image_file:
                 image_file.write(image_bytes)
 
-            rects = page.get_image_rects(xref)
-            rect = rects[0] if rects else pymupdf.Rect(0, 0, 0, 0)
-
-            caption = _find_caption_near(page_text, rect, page)
-
-            context_start = max(0, page_text.find(caption[:30]) - 500) \
-                if caption != "NOT_REPORTED" else 0
-
-            context = page_text[context_start:context_start + 1500]
-
-            figures.append({
-                "image_path": output_path,
-                "figure_number": figure_number,
-                "page_number": page_number,
-                "caption": caption,
-                "context": context if context else "NOT_REPORTED",
-                "page_text": page_text,
-                "full_paper_text": full_paper_text,
-                "visual_label_type": _visual_label_type_from_caption(caption)
-            })
+            figures.append(output_path)
 
     document.close()
 

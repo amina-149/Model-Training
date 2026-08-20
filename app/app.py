@@ -9,11 +9,11 @@ from pathlib import Path
 from src.image_generator import generate_image
 from src.pdf_processor import (
     extract_pdf_metadata,
-    extract_text_from_pdf,
-    extract_figures
+    extract_text_from_pdf
 )
 from src.ai_service import analyze_paper
 from src.prompt_generator import generate_image_prompts
+from src.figure_extractor import extract_figures
 from src.figure_labeler import generate_figure_label
 from src.duplicate_detector import detect_duplicate
 from src.paper_sources import get_approved_sources

@@ -15,7 +15,8 @@ import glob
 import os
 import re
 
-from src.pdf_processor import extract_pdf_metadata, extract_figures
+from src.pdf_processor import extract_pdf_metadata
+from src.figure_extractor import extract_figures
 from src.figure_labeler import generate_figure_label
 from src.duplicate_detector import detect_duplicate
 
