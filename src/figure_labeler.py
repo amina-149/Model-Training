@@ -7,6 +7,7 @@ from io import BytesIO
 from PIL import Image
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 
 
 # ============================================================
@@ -23,7 +24,15 @@ if not API_KEY:
     )
 
 client = genai.Client(
-    api_key=API_KEY
+    api_key=API_KEY,
+    # Without an explicit timeout, a stalled connection (e.g. a
+    # brief local network/DNS drop) can hang the request
+    # indefinitely instead of raising -- observed hanging for 90+
+    # minutes on an unstable connection. 60s is generous for a
+    # single-image vision call.
+    http_options=types.HttpOptions(
+        timeout=60_000
+    )
 )
 
 
@@ -223,6 +232,8 @@ def find_crop_from_paper(text):
 
     text = normalize_text(text)
 
+    # (?:e?s)? tolerates simple plurals (pea/peas, tomato/tomatoes,
+    # oat/oats) that a bare \bword\b would silently fail to match.
     crop_patterns = [
 
         ("WHEAT", r"\bwheat\b"),
@@ -231,18 +242,18 @@ def find_crop_from_paper(text):
         ("MAIZE", r"\bcorn\b"),
         ("COTTON", r"\bcotton\b"),
         ("SUGARCANE", r"\bsugarcane\b"),
-        ("TOMATO", r"\btomato\b"),
-        ("POTATO", r"\bpotato\b"),
-        ("CHICKPEA", r"\bchickpea\b"),
-        ("PEA", r"\bpea\b"),
-        ("LENTIL", r"\blentil\b"),
+        ("TOMATO", r"\btomato(?:e?s)?\b"),
+        ("POTATO", r"\bpotato(?:e?s)?\b"),
+        ("CHICKPEA", r"\bchickpea(?:s)?\b"),
+        ("PEA", r"\bpea(?:s)?\b"),
+        ("LENTIL", r"\blentil(?:s)?\b"),
         ("BARLEY", r"\bbarley\b"),
-        ("OAT", r"\boat\b"),
+        ("OAT", r"\boat(?:s)?\b"),
         ("MUSTARD", r"\bmustard\b"),
-        ("SUNFLOWER", r"\bsunflower\b"),
-        ("SOYBEAN", r"\bsoybean\b"),
-        ("GROUNDNUT", r"\bgroundnut\b"),
-        ("PEANUT", r"\bpeanut\b"),
+        ("SUNFLOWER", r"\bsunflower(?:s)?\b"),
+        ("SOYBEAN", r"\bsoybean(?:s)?\b"),
+        ("GROUNDNUT", r"\bgroundnut(?:s)?\b"),
+        ("PEANUT", r"\bpeanut(?:s)?\b"),
         ("TOBACCO", r"\btobacco\b")
     ]
 
@@ -350,15 +361,21 @@ def find_disease_from_paper(text):
 
     text = normalize_text(text)
 
+    # Preceding-word run is capped at 2 words so the match can't
+    # swallow an unrelated sentence just because it ends in a
+    # disease-suffix word (e.g. "system's ability to detect
+    # disease" is not a disease name). The fully generic
+    # "<anything> disease" pattern is intentionally not included
+    # here for the same reason -- any sentence ending in the word
+    # "disease" would otherwise match.
     disease_patterns = [
-        r"([A-Za-z][A-Za-z\s\-]+leaf spot(?: disease)?)",
-        r"([A-Za-z][A-Za-z\s\-]+blight(?: disease)?)",
-        r"([A-Za-z][A-Za-z\s\-]+rust(?: disease)?)",
-        r"([A-Za-z][A-Za-z\s\-]+smut(?: disease)?)",
-        r"([A-Za-z][A-Za-z\s\-]+wilt(?: disease)?)",
-        r"([A-Za-z][A-Za-z\s\-]+mildew(?: disease)?)",
-        r"([A-Za-z][A-Za-z\s\-]+rot(?: disease)?)",
-        r"([A-Za-z][A-Za-z\s\-]+disease)"
+        r"((?:[A-Za-z\-]+\s+){0,2}[A-Za-z\-]*leaf spot(?: disease)?)",
+        r"((?:[A-Za-z\-]+\s+){0,2}[A-Za-z\-]*blight(?: disease)?)",
+        r"((?:[A-Za-z\-]+\s+){0,2}[A-Za-z\-]*rust(?: disease)?)",
+        r"((?:[A-Za-z\-]+\s+){0,2}[A-Za-z\-]*smut(?: disease)?)",
+        r"((?:[A-Za-z\-]+\s+){0,2}[A-Za-z\-]*wilt(?: disease)?)",
+        r"((?:[A-Za-z\-]+\s+){0,2}[A-Za-z\-]*mildew(?: disease)?)",
+        r"((?:[A-Za-z\-]+\s+){0,2}[A-Za-z\-]*rot(?: disease)?)"
     ]
 
     for pattern in disease_patterns:
@@ -1448,12 +1465,33 @@ def generate_figure_label(
         # DETERMINISTIC PAPER EXTRACTION
         # ====================================================
 
+        # Crop and disease must only be pulled from evidence that
+        # is local to THIS figure (caption/context/nearby text).
+        # Scanning the whole paper picks up incidental mentions
+        # from unrelated sentences (e.g. an intro sentence listing
+        # example crops/diseases) and, worse, papers that discuss
+        # multiple crops would stamp the same single crop/disease
+        # onto every figure regardless of what that figure shows.
+        # NOTE: deliberately does NOT include find_figure_evidence()
+        # here -- its window (+-1200/2500 chars) is wide enough to
+        # pull in neighboring figures' captions in short papers,
+        # which reintroduces the same whole-document bleed-through
+        # this scoping is meant to prevent. caption/context are
+        # already tightly scoped to this exact figure.
+        figure_local_text = "\n".join(
+            text for text in [
+                caption if caption != "NOT_REPORTED" else "",
+                context if context != "NOT_REPORTED" else ""
+            ]
+            if text
+        )
+
         paper_crop = find_crop_from_paper(
-            full_paper_text
+            figure_local_text
         )
 
         paper_disease = find_disease_from_paper(
-            full_paper_text
+            figure_local_text
         )
 
         paper_location = find_location_from_paper(
@@ -1640,6 +1678,20 @@ CURRENT PAGE TEXT
 ====================================================
 COMPLETE RESEARCH PAPER TEXT
 ====================================================
+
+WARNING: this is the ENTIRE paper and may describe MANY different
+figures/images, each with its own crop, disease, and pest. It is
+provided only for general background (methodology, location, general
+terminology). It is NOT evidence about what THIS specific image
+(Figure {figure_number}) shows.
+
+Do NOT assume this image shares the crop/disease/pest of a DIFFERENT
+figure just because that figure's caption appears somewhere in this
+text. Only treat a sentence as evidence for THIS image if it is
+explicitly about Figure {figure_number} (matches the caption above,
+or explicitly says "Fig. {figure_number}" / "Figure {figure_number}").
+Otherwise rely on the ORIGINAL FIGURE CAPTION above and the actual
+visual content of this specific image.
 
 {full_paper_text_for_ai}
 
@@ -2217,51 +2269,81 @@ Return exactly this structure:
         # ====================================================
         # GEMINI
         # ====================================================
+        # Retried on malformed JSON: the model occasionally emits
+        # an invalid JSON body (e.g. an unescaped character inside
+        # a free-text field). Re-asking is cheap and usually
+        # succeeds since sampling isn't deterministic; a genuinely
+        # broken prompt/image would keep failing and surface after
+        # the retries are exhausted.
 
-        response = client.models.generate_content(
+        MAX_JSON_ATTEMPTS = 3
 
-            model="gemini-flash-latest",
+        result = None
+        last_json_error = None
 
-            contents=[
+        for json_attempt in range(MAX_JSON_ATTEMPTS):
 
-                prompt,
+            response = client.models.generate_content(
 
-                {
-                    "inline_data": {
-                        "mime_type":
-                            mime_type,
+                model="gemini-2.5-flash",
 
-                        "data":
-                            image_bytes
+                contents=[
+
+                    prompt,
+
+                    {
+                        "inline_data": {
+                            "mime_type":
+                                mime_type,
+
+                            "data":
+                                image_bytes
+                        }
                     }
-                }
-            ]
-        )
-
-        response_text = response.text.strip()
-
-        # ====================================================
-        # CLEAN JSON
-        # ====================================================
-
-        if response_text.startswith("```"):
-
-            response_text = (
-                response_text
-                .replace(
-                    "```json",
-                    ""
-                )
-                .replace(
-                    "```",
-                    ""
-                )
-                .strip()
+                ]
             )
 
-        result = json.loads(
-            response_text
-        )
+            response_text = response.text.strip()
+
+            # ================================================
+            # CLEAN JSON
+            # ================================================
+
+            if response_text.startswith("```"):
+
+                response_text = (
+                    response_text
+                    .replace(
+                        "```json",
+                        ""
+                    )
+                    .replace(
+                        "```",
+                        ""
+                    )
+                    .strip()
+                )
+
+            try:
+
+                result = json.loads(
+                    response_text
+                )
+
+                break
+
+            except json.JSONDecodeError as e:
+
+                last_json_error = e
+
+                print(
+                    f"Figure analysis: malformed JSON on attempt "
+                    f"{json_attempt + 1}/{MAX_JSON_ATTEMPTS}: {e}"
+                )
+
+        if result is None:
+
+            raise last_json_error
 
         # ====================================================
         # APPLY DETERMINISTIC CAPTION INFORMATION
